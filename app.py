@@ -555,6 +555,17 @@ elif page == "📊 Analytics Dashboard":
     
     with st.spinner("Loading channels..."):
         channels = get_accessible_channels(creds)
+        
+        # Also check for manual channels
+        if 'manual_channels' in st.session_state and st.session_state.manual_channels:
+            if channels:
+                # Combine auto-discovered and manual channels, avoiding duplicates
+                existing_ids = {ch['id'] for ch in channels}
+                for manual_ch in st.session_state.manual_channels:
+                    if manual_ch['id'] not in existing_ids:
+                        channels.append(manual_ch)
+            else:
+                channels = st.session_state.manual_channels
     
     if channels:
         # Channel selection
@@ -562,7 +573,7 @@ elif page == "📊 Analytics Dashboard":
         selected_channel_names = st.multiselect(
             "Select channels to analyze:",
             options=list(channel_options.keys()),
-            default=list(channel_options.keys())[:3]  # Select first 3 by default
+            default=list(channel_options.keys())[:3] if len(channel_options) <= 3 else list(channel_options.keys())[:3]  # Select first 3 by default
         )
         
         if selected_channel_names:
