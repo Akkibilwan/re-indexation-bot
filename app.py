@@ -303,8 +303,8 @@ def get_all_channels_comprehensive(credentials):
                     # Now list channels for this content owner
                     channels_for_owner_request = youtube_owner_service.channels().list(
                         part="snippet,statistics,brandingSettings",
-                        onBehalfOfContentOwner=owner_id,
-                        mine=True # This should work with onBehalfOfContentOwner
+                         onBehalfOfContentOwner=owner_id,
+                        managedByMe=True # This should work with onBehalfOfContentOwner
                     )
                     channels_for_owner_response = channels_for_owner_request.execute()
                     owner_channels = channels_for_owner_response.get("items", [])
