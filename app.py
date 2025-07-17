@@ -27,6 +27,9 @@ SCOPES = [
 
 # --- Secrets Management ---
 try:
+    # Get the Streamlit Cloud URL first
+    streamlit_cloud_url = st.secrets["STREAMLIT_CLOUD_URI"]
+    
     CLIENT_CONFIG = {
         "web": {
             "client_id": st.secrets["GOOGLE_CLIENT_ID"],
@@ -35,10 +38,19 @@ try:
             "token_uri": "https://oauth2.googleapis.com/token",
             "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
             "client_secret": st.secrets["GOOGLE_CLIENT_SECRET"],
-            "redirect_uris": [st.secrets["STREAMLIT_CLOUD_URI"]]
+            "redirect_uris": [streamlit_cloud_url]
         }
     }
     GOOGLE_SHEET_ID = st.secrets["GOOGLE_SHEET_ID"].strip()
+    
+    # Validate required secrets
+    required_secrets = ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "STREAMLIT_CLOUD_URI", "GOOGLE_SHEET_ID"]
+    missing_secrets = [secret for secret in required_secrets if not st.secrets.get(secret)]
+    
+    if missing_secrets:
+        st.error(f"🔴 Missing required secrets: {', '.join(missing_secrets)}")
+        st.stop()
+        
 except KeyError as e:
     st.error(f"🔴 Critical Error: Missing secret key - {e}. Please configure your secrets in the Streamlit app settings.")
     st.error("Required secrets: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, STREAMLIT_CLOUD_URI, GOOGLE_SHEET_ID")
@@ -602,68 +614,134 @@ if page == "🔐 Authentication":
         # Use Streamlit Cloud URL
         redirect_uri = get_streamlit_cloud_url()
         
-        # Update CLIENT_CONFIG with the Streamlit Cloud redirect URI
-        CLIENT_CONFIG["web"]["redirect_uris"] = [redirect_uri]
-        
-        flow = Flow.from_client_config(
-            CLIENT_CONFIG,
-            scopes=SCOPES,
-            redirect_uri=redirect_uri
-        )
-        auth_url, _ = flow.authorization_url(prompt='consent')
-        
-        # Display current redirect URI for verification
-        with st.expander("🔧 App Configuration"):
-            st.write(f"**Streamlit Cloud URL:** {redirect_uri}")
-            st.write("Make sure this URL is added to your Google Cloud Console OAuth settings.")
-        
-        st.link_button("🔐 Authorize with Google", auth_url, type="primary")
-        
-        # Manual authorization code input as primary method for Streamlit Cloud
-        st.write("---")
-        st.subheader("📝 Authorization Code")
-        st.write("After clicking the authorization button above:")
-        st.write("1. Complete the Google authorization process")
-        st.write("2. You may see an error page - that's normal!")
-        st.write("3. Copy the **code** parameter from the URL")
-        st.write("4. Paste it below and click Submit")
-        
-        # Example of what to look for
-        st.code("Example URL: https://your-app.streamlit.app/?code=4/0AbUR2VM... \nCopy: 4/0AbUR2VM...")
-        
-        manual_auth_code = st.text_input(
-            "Paste Authorization Code Here", 
-            placeholder="4/0AbUR2VM...",
-            help="Copy the entire code parameter from the redirect URL"
-        )
-        
-        if st.button("✅ Submit Authorization Code", type="primary") and manual_auth_code:
-            try:
-                # Clean the auth code (remove any extra spaces or characters)
-                clean_auth_code = manual_auth_code.strip()
-                flow.fetch_token(code=clean_auth_code)
-                save_credentials_to_session(flow.credentials)
-                st.success("🎉 Authentication successful! Navigate to Analytics Dashboard.")
-                st.balloons()
-                st.rerun()
-            except Exception as e:
-                st.error(f"❌ Authentication failed: {e}")
-                st.write("**Troubleshooting tips:**")
-                st.write("- Make sure you copied the complete authorization code")
-                st.write("- The code should start with '4/0A' or similar")
-                st.write("- Try getting a fresh code by clicking the authorization button again")
-
-        # Auto-check for authorization code in URL (backup method)
-        auth_code = st.query_params.get("code")
-        if auth_code:
-            try:
-                flow.fetch_token(code=auth_code)
-                save_credentials_to_session(flow.credentials)
-                st.success("🎉 Authentication successful! Navigate to Analytics Dashboard.")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Auto-authentication failed: {e}")
-                st.write("Please use the manual method above.")
+        # Create a fresh flow each time
+        try:
+            flow = Flow.from_client_config(
+                CLIENT_CONFIG,
+                scopes=SCOPES,
+                redirect_uri=redirect_uri
+            )
+            auth_url, _ = flow.authorization_url(
+                prompt='consent',
+                access_type='offline',
+                include_granted_scopes='true'
+            )
+            
+            # Display current redirect URI for verification
+            with st.expander("🔧 App Configuration"):
+                st.write(f"**Streamlit Cloud URL:** {redirect_uri}")
+                st.write("Make sure this URL is added to your Google Cloud Console OAuth settings.")
+                st.write(f"**Scopes requested:** {', '.join(SCOPES)}")
+            
+            st.link_button("🔐 Authorize with Google", auth_url, type="primary")
+            
+            # Auto-check for authorization code in URL first
+            auth_code = st.query_params.get("code")
+            if auth_code:
+                with st.spinner("Processing authorization..."):
+                    try:
+                        flow.fetch_token(code=auth_code)
+                        save_credentials_to_session(flow.credentials)
+                        st.success("🎉 Authentication successful! Navigate to Analytics Dashboard.")
+                        st.balloons()
+                        # Clear the code from URL
+                        st.query_params.clear()
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ Auto-authentication failed: {e}")
+                        st.write("Please use the manual method below.")
+            
+            # Manual authorization code input as fallback
+            st.write("---")
+            st.subheader("📝 Manual Authorization")
+            st.write("If the automatic process doesn't work:")
+            st.write("1. Click the authorization button above")
+            st.write("2. Complete the Google authorization process")
+            st.write("3. You may see an error page - that's normal!")
+            st.write("4. Copy the **code** parameter from the URL")
+            st.write("5. Paste it below and click Submit")
+            
+            # Example of what to look for
+            st.code("Example URL: https://your-app.streamlit.app/?code=4/0AbUR2VM... \nCopy: 4/0AbUR2VM...")
+            
+            manual_auth_code = st.text_input(
+                "Paste Authorization Code Here", 
+                placeholder="4/0AbUR2VM...",
+                help="Copy the entire code parameter from the redirect URL",
+                key="manual_auth_input"
+            )
+            
+            if st.button("✅ Submit Authorization Code", type="primary") and manual_auth_code:
+                with st.spinner("Processing manual authorization..."):
+                    try:
+                        # Clean the auth code (remove any extra spaces or characters)
+                        clean_auth_code = manual_auth_code.strip()
+                        
+                        # Create a fresh flow for manual processing
+                        manual_flow = Flow.from_client_config(
+                            CLIENT_CONFIG,
+                            scopes=SCOPES,
+                            redirect_uri=redirect_uri
+                        )
+                        manual_flow.fetch_token(code=clean_auth_code)
+                        save_credentials_to_session(manual_flow.credentials)
+                        st.success("🎉 Manual authentication successful! Navigate to Analytics Dashboard.")
+                        st.balloons()
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ Manual authentication failed: {e}")
+                        st.write("**Troubleshooting tips:**")
+                        st.write("- Make sure you copied the complete authorization code")
+                        st.write("- The code should start with '4/0A' or similar")
+                        st.write("- Try getting a fresh code by clicking the authorization button again")
+                        st.write("- Check that your Google Cloud Console OAuth settings are correct")
+                        
+                        # Show detailed error for debugging
+                        with st.expander("🔧 Debug Information"):
+                            st.write(f"**Error details:** {str(e)}")
+                            st.write(f"**Redirect URI:** {redirect_uri}")
+                            st.write(f"**Code length:** {len(clean_auth_code) if clean_auth_code else 0}")
+                            st.write(f"**Code starts with:** {clean_auth_code[:10] if clean_auth_code else 'N/A'}")
+            
+        except Exception as e:
+            st.error(f"❌ Failed to create OAuth flow: {e}")
+            st.write("**This usually means:**")
+            st.write("- Your Google Cloud Console credentials are incorrect")
+            st.write("- The redirect URI doesn't match your Google Cloud Console settings")
+            st.write("- Required APIs are not enabled")
+            
+            with st.expander("🔧 Debug Information"):
+                st.write(f"**Error:** {str(e)}")
+                st.write(f"**Redirect URI:** {redirect_uri}")
+                st.write("**CLIENT_CONFIG:**")
+                st.json({k: v for k, v in CLIENT_CONFIG["web"].items() if k != "client_secret"})
+            
+            # Additional troubleshooting section
+            st.write("---")
+            st.subheader("🛠️ Troubleshooting Authentication")
+            
+            st.write("**1. Check Google Cloud Console Settings:**")
+            st.write("- Go to [Google Cloud Console](https://console.cloud.google.com/)")
+            st.write("- Navigate to APIs & Services → Credentials")
+            st.write("- Find your OAuth 2.0 Client ID")
+            st.write("- Ensure these APIs are enabled:")
+            st.write("  - YouTube Analytics API")
+            st.write("  - YouTube Data API v3")
+            st.write("  - Google Sheets API")
+            
+            st.write("**2. Verify Redirect URI:**")
+            st.write(f"- Add this exact URL to 'Authorized redirect URIs': `{redirect_uri}`")
+            st.write("- Make sure there are no extra spaces or characters")
+            
+            st.write("**3. OAuth Consent Screen:**")
+            st.write("- Make sure your OAuth consent screen is configured")
+            st.write("- Add your email to test users if the app is in testing mode")
+            st.write("- Consider publishing the app for broader access")
+            
+            st.write("**4. Test Your Configuration:**")
+            test_url = f"https://accounts.google.com/o/oauth2/v2/auth?client_id={CLIENT_CONFIG['web']['client_id']}&redirect_uri={redirect_uri}&response_type=code&scope=openid"
+            st.write(f"- Test basic OAuth: [Click here]({test_url})")
+            st.write("- This should redirect to Google's login page")
     else:
         st.success("✅ You are authenticated!")
         
