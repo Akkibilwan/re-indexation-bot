@@ -16,11 +16,12 @@ import json
 st.set_page_config(page_title="Multi-Channel YouTube Analytics Dashboard", page_icon="📊", layout="wide")
 
 # --- Google API Configuration ---
+# Keep scopes consistent and in the same order
 SCOPES = [
     "https://www.googleapis.com/auth/yt-analytics.readonly",
-    "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/youtube.readonly",
     "https://www.googleapis.com/auth/youtube.force-ssl",
+    "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/userinfo.email",
     "https://www.googleapis.com/auth/userinfo.profile"
 ]
@@ -63,6 +64,10 @@ if 'selected_channels' not in st.session_state:
     st.session_state.selected_channels = []
 if 'analytics_data' not in st.session_state:
     st.session_state.analytics_data = {}
+if 'oauth_flow' not in st.session_state:
+    st.session_state.oauth_flow = None
+if 'auth_state' not in st.session_state:
+    st.session_state.auth_state = None
 
 # --- Helper Functions ---
 def get_credentials_from_session():
@@ -85,6 +90,22 @@ def save_credentials_to_session(credentials):
 def get_streamlit_cloud_url():
     """Gets the Streamlit Cloud URL from secrets or environment."""
     return st.secrets["STREAMLIT_CLOUD_URI"]
+
+def create_oauth_flow():
+    """Create a consistent OAuth flow with proper state management."""
+    redirect_uri = get_streamlit_cloud_url()
+    
+    flow = Flow.from_client_config(
+        CLIENT_CONFIG,
+        scopes=SCOPES,
+        redirect_uri=redirect_uri
+    )
+    
+    # Generate a consistent state parameter
+    import hashlib
+    state = hashlib.md5(f"{redirect_uri}_{','.join(SCOPES)}".encode()).hexdigest()
+    
+    return flow, state
 
 def get_all_channels_comprehensive(credentials):
     """
@@ -611,98 +632,129 @@ if page == "🔐 Authentication":
     if creds is None:
         st.write("Click the button below to grant access to your YouTube Analytics and Google Sheets data.")
         
-        # Use Streamlit Cloud URL
+        # Create or get OAuth flow from session state
+        if st.session_state.oauth_flow is None:
+            flow, state = create_oauth_flow()
+            st.session_state.oauth_flow = flow
+            st.session_state.auth_state = state
+        else:
+            flow = st.session_state.oauth_flow
+            state = st.session_state.auth_state
+        
         redirect_uri = get_streamlit_cloud_url()
         
-        # Create a fresh flow each time
+        # Create authorization URL with consistent state
         try:
-            flow = Flow.from_client_config(
-                CLIENT_CONFIG,
-                scopes=SCOPES,
-                redirect_uri=redirect_uri
-            )
             auth_url, _ = flow.authorization_url(
                 prompt='consent',
                 access_type='offline',
-                include_granted_scopes='true'
+                include_granted_scopes='true',
+                state=state
             )
             
-            # Display current redirect URI for verification
+            # Display current configuration
             with st.expander("🔧 App Configuration"):
                 st.write(f"**Streamlit Cloud URL:** {redirect_uri}")
+                st.write(f"**OAuth State:** {state}")
+                st.write("**Scopes requested:**")
+                for scope in SCOPES:
+                    st.write(f"  - {scope}")
                 st.write("Make sure this URL is added to your Google Cloud Console OAuth settings.")
-                st.write(f"**Scopes requested:** {', '.join(SCOPES)}")
             
             st.link_button("🔐 Authorize with Google", auth_url, type="primary")
             
-            # Auto-check for authorization code in URL first
+            # Check for authorization code in URL first
             auth_code = st.query_params.get("code")
-            if auth_code:
-                with st.spinner("Processing authorization..."):
-                    try:
-                        flow.fetch_token(code=auth_code)
-                        save_credentials_to_session(flow.credentials)
-                        st.success("🎉 Authentication successful! Navigate to Analytics Dashboard.")
-                        st.balloons()
-                        # Clear the code from URL
-                        st.query_params.clear()
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"❌ Auto-authentication failed: {e}")
-                        st.write("Please use the manual method below.")
+            url_state = st.query_params.get("state")
             
-            # Manual authorization code input as fallback
+            if auth_code and url_state:
+                # Verify state matches
+                if url_state == state:
+                    with st.spinner("Processing authorization..."):
+                        try:
+                            flow.fetch_token(code=auth_code)
+                            save_credentials_to_session(flow.credentials)
+                            st.success("🎉 Authentication successful! Navigate to Analytics Dashboard.")
+                            st.balloons()
+                            
+                            # Clear session state and URL parameters
+                            st.session_state.oauth_flow = None
+                            st.session_state.auth_state = None
+                            st.query_params.clear()
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ Auto-authentication failed: {e}")
+                            st.write("Please try the manual method below.")
+                else:
+                    st.error("❌ Security error: State mismatch. Please try again.")
+                    st.session_state.oauth_flow = None
+                    st.session_state.auth_state = None
+            
+            # Manual authorization code input
             st.write("---")
             st.subheader("📝 Manual Authorization")
             st.write("If the automatic process doesn't work:")
             st.write("1. Click the authorization button above")
             st.write("2. Complete the Google authorization process")
-            st.write("3. You may see an error page - that's normal!")
-            st.write("4. Copy the **code** parameter from the URL")
-            st.write("5. Paste it below and click Submit")
+            st.write("3. Copy the **entire URL** from the address bar")
+            st.write("4. Paste it below and click Submit")
             
-            # Example of what to look for
-            st.code("Example URL: https://your-app.streamlit.app/?code=4/0AbUR2VM... \nCopy: 4/0AbUR2VM...")
+            st.code("Example: https://your-app.streamlit.app/?code=4/0AbUR2VM...&state=abc123")
             
-            manual_auth_code = st.text_input(
-                "Paste Authorization Code Here", 
-                placeholder="4/0AbUR2VM...",
-                help="Copy the entire code parameter from the redirect URL",
-                key="manual_auth_input"
+            manual_url = st.text_input(
+                "Paste the complete redirect URL here:", 
+                placeholder="https://your-app.streamlit.app/?code=4/0AbUR2VM...&state=abc123",
+                help="Copy the entire URL from your browser's address bar after authorization",
+                key="manual_url_input"
             )
             
-            if st.button("✅ Submit Authorization Code", type="primary") and manual_auth_code:
+            if st.button("✅ Submit Authorization URL", type="primary") and manual_url:
                 with st.spinner("Processing manual authorization..."):
                     try:
-                        # Clean the auth code (remove any extra spaces or characters)
-                        clean_auth_code = manual_auth_code.strip()
+                        # Extract code and state from URL
+                        from urllib.parse import urlparse, parse_qs
+                        parsed_url = urlparse(manual_url)
+                        query_params = parse_qs(parsed_url.query)
                         
-                        # Create a fresh flow for manual processing
-                        manual_flow = Flow.from_client_config(
-                            CLIENT_CONFIG,
-                            scopes=SCOPES,
-                            redirect_uri=redirect_uri
-                        )
-                        manual_flow.fetch_token(code=clean_auth_code)
-                        save_credentials_to_session(manual_flow.credentials)
-                        st.success("🎉 Manual authentication successful! Navigate to Analytics Dashboard.")
-                        st.balloons()
-                        st.rerun()
+                        manual_code = query_params.get('code', [None])[0]
+                        manual_state = query_params.get('state', [None])[0]
+                        
+                        if not manual_code:
+                            st.error("❌ No authorization code found in URL")
+                        elif manual_state != state:
+                            st.error("❌ Security error: State mismatch. Please get a fresh authorization URL.")
+                        else:
+                            # Use the same flow instance
+                            flow.fetch_token(code=manual_code)
+                            save_credentials_to_session(flow.credentials)
+                            st.success("🎉 Manual authentication successful! Navigate to Analytics Dashboard.")
+                            st.balloons()
+                            
+                            # Clear session state
+                            st.session_state.oauth_flow = None
+                            st.session_state.auth_state = None
+                            st.rerun()
+                            
                     except Exception as e:
                         st.error(f"❌ Manual authentication failed: {e}")
                         st.write("**Troubleshooting tips:**")
-                        st.write("- Make sure you copied the complete authorization code")
-                        st.write("- The code should start with '4/0A' or similar")
-                        st.write("- Try getting a fresh code by clicking the authorization button again")
-                        st.write("- Check that your Google Cloud Console OAuth settings are correct")
+                        st.write("- Make sure you copied the complete URL")
+                        st.write("- The URL should contain both 'code' and 'state' parameters")
+                        st.write("- Try getting a fresh authorization URL")
                         
-                        # Show detailed error for debugging
                         with st.expander("🔧 Debug Information"):
                             st.write(f"**Error details:** {str(e)}")
-                            st.write(f"**Redirect URI:** {redirect_uri}")
-                            st.write(f"**Code length:** {len(clean_auth_code) if clean_auth_code else 0}")
-                            st.write(f"**Code starts with:** {clean_auth_code[:10] if clean_auth_code else 'N/A'}")
+                            st.write(f"**Manual URL:** {manual_url}")
+                            st.write(f"**Expected state:** {state}")
+                            if 'manual_state' in locals():
+                                st.write(f"**Received state:** {manual_state}")
             
+            # Reset flow button
+            if st.button("🔄 Reset Authentication Flow"):
+                st.session_state.oauth_flow = None
+                st.session_state.auth_state = None
+                st.rerun()
+                
         except Exception as e:
             st.error(f"❌ Failed to create OAuth flow: {e}")
             st.write("**This usually means:**")
