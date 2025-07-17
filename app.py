@@ -159,8 +159,8 @@ def get_all_channels_comprehensive(credentials):
             personal_channels = personal_response.get("items", [])
             
             for channel in personal_channels:
-                channel['channel_type'] = 'Personal'
-                channel['discovery_method'] = 'YouTube API - mine=True'
+                channel["channel_type"] = "Personal"
+                channel["discovery_method"] = "YouTube API - mine=True"
                 all_channels.append(channel)
                 
         except HttpError as e:
@@ -169,28 +169,28 @@ def get_all_channels_comprehensive(credentials):
         # Method 2: Direct REST API call to get all channels
         try:
             headers = {
-                'Authorization': f'Bearer {access_token}',
-                'Accept': 'application/json'
+                "Authorization": f"Bearer {access_token}",
+                "Accept": "application/json"
             }
             
             # This endpoint sometimes returns more channels than the SDK
             api_url = "https://www.googleapis.com/youtube/v3/channels"
             params = {
-                'part': 'snippet,statistics,brandingSettings,contentDetails',
-                'mine': 'true',
-                'maxResults': 50
+                "part": "snippet,statistics,brandingSettings,contentDetails",
+                "mine": "true",
+                "maxResults": 50
             }
             
             response = requests.get(api_url, headers=headers, params=params)
             if response.status_code == 200:
                 data = response.json()
-                direct_channels = data.get('items', [])
+                direct_channels = data.get("items", [])
                 
-                existing_ids = {ch['id'] for ch in all_channels}
+                existing_ids = {ch["id"] for ch in all_channels}
                 for channel in direct_channels:
-                    if channel['id'] not in existing_ids:
-                        channel['channel_type'] = 'Direct API'
-                        channel['discovery_method'] = 'Direct REST API'
+                    if channel["id"] not in existing_ids:
+                        channel["channel_type"] = "Direct API"
+                        channel["discovery_method"] = "Direct REST API"
                         all_channels.append(channel)
                         
         except Exception as e:
@@ -198,30 +198,30 @@ def get_all_channels_comprehensive(credentials):
         
         # Method 3: Use YouTube Analytics API to discover channels
         try:
-            analytics_service = build('youtubeAnalytics', 'v2', credentials=credentials)
+            analytics_service = build("youtubeAnalytics", "v2", credentials=credentials)
             
             # Try to get available channels through analytics
-            # This often reveals brand channels that aren't shown in regular API
+            # This often reveals brand channels that aren\'t shown in regular API
             analytics_url = "https://youtubeanalytics.googleapis.com/v2/reports"
             headers = {
-                'Authorization': f'Bearer {access_token}',
-                'Accept': 'application/json'
+                "Authorization": f"Bearer {access_token}",
+                "Accept": "application/json"
             }
             
             # Get a simple report that will reveal channel IDs
             params = {
-                'ids': 'channel==MINE',
-                'startDate': '2023-01-01',
-                'endDate': '2023-01-02',
-                'metrics': 'views',
-                'dimensions': 'channel'
+                "ids": "channel==MINE",
+                "startDate": "2023-01-01",
+                "endDate": "2023-01-02",
+                "metrics": "views",
+                "dimensions": "channel"
             }
             
             response = requests.get(analytics_url, headers=headers, params=params)
             if response.status_code == 200:
                 data = response.json()
-                if 'rows' in data:
-                    for row in data['rows']:
+                if "rows" in data:
+                    for row in data["rows"]:
                         channel_id = row[0] if row else None
                         if channel_id:
                             # Get full channel details
@@ -233,11 +233,11 @@ def get_all_channels_comprehensive(credentials):
                                 channel_response = channel_request.execute()
                                 analytics_channels = channel_response.get("items", [])
                                 
-                                existing_ids = {ch['id'] for ch in all_channels}
+                                existing_ids = {ch["id"] for ch in all_channels}
                                 for channel in analytics_channels:
-                                    if channel['id'] not in existing_ids:
-                                        channel['channel_type'] = 'Analytics Discovery'
-                                        channel['discovery_method'] = 'YouTube Analytics API'
+                                    if channel["id"] not in existing_ids:
+                                        channel["channel_type"] = "Analytics Discovery"
+                                        channel["discovery_method"] = "YouTube Analytics API"
                                         all_channels.append(channel)
                                         
                             except HttpError:
@@ -257,8 +257,8 @@ def get_all_channels_comprehensive(credentials):
             )
             search_response = search_request.execute()
             
-            for item in search_response.get('items', []):
-                channel_id = item['snippet']['channelId']
+            for item in search_response.get("items", []):
+                channel_id = item["snippet"]["channelId"]
                 
                 # Get full channel details
                 try:
@@ -269,11 +269,11 @@ def get_all_channels_comprehensive(credentials):
                     channel_response = channel_request.execute()
                     search_channels = channel_response.get("items", [])
                     
-                    existing_ids = {ch['id'] for ch in all_channels}
+                    existing_ids = {ch["id"] for ch in all_channels}
                     for channel in search_channels:
-                        if channel['id'] not in existing_ids:
-                            channel['channel_type'] = 'Search Discovery'
-                            channel['discovery_method'] = 'YouTube Search API'
+                        if channel["id"] not in existing_ids:
+                            channel["channel_type"] = "Search Discovery"
+                            channel["discovery_method"] = "YouTube Search API"
                             all_channels.append(channel)
                             
                 except HttpError:
@@ -282,6 +282,48 @@ def get_all_channels_comprehensive(credentials):
         except HttpError as e:
             st.info(f"Search discovery failed: {e}")
         
+        # Method 5: Attempt to list content owners and their associated channels
+        try:
+            st.info("Attempting to discover channels via content owner API...")
+            youtube_owner_service = build("youtube", "v3", credentials=credentials)
+            
+            # First, try to list content owners associated with the account
+            # This requires YouTube Content ID API access, which might not be granted to all users
+            try:
+                content_owners_request = youtube_owner_service.contentOwners().list(
+                    part="snippet"
+                )
+                content_owners_response = content_owners_request.execute()
+                content_owners = content_owners_response.get("items", [])
+                
+                for owner in content_owners:
+                    owner_id = owner["id"]
+                    st.info(f"Found Content Owner: {owner["snippet"]["displayName"]} (ID: {owner_id})")
+                    
+                    # Now list channels for this content owner
+                    channels_for_owner_request = youtube_owner_service.channels().list(
+                        part="snippet,statistics,brandingSettings",
+                        onBehalfOfContentOwner=owner_id,
+                        mine=True # This should work with onBehalfOfContentOwner
+                    )
+                    channels_for_owner_response = channels_for_owner_request.execute()
+                    owner_channels = channels_for_owner_response.get("items", [])
+                    
+                    existing_ids = {ch["id"] for ch in all_channels}
+                    for channel in owner_channels:
+                        if channel["id"] not in existing_ids:
+                            channel["channel_type"] = "Brand (Content Owner)"
+                            channel["discovery_method"] = f"YouTube Content Owner API ({owner["snippet"]["displayName"]})"
+                            all_channels.append(channel)
+                            
+            except HttpError as e:
+                if e.resp.status == 403:
+                    st.warning(f"Content Owner API access denied. This is common if you don't have Content ID access. Error: {e}")
+                else:
+                    st.info(f"Content Owner API failed: {e}")
+        except Exception as e:
+            st.info(f"Content Owner API discovery failed: {e}")
+
         # Display discovery summary
         if all_channels:
             st.success(f"🎉 Found {len(all_channels)} total channels using multiple discovery methods!")
@@ -289,7 +331,7 @@ def get_all_channels_comprehensive(credentials):
             # Group by discovery method
             method_counts = {}
             for channel in all_channels:
-                method = channel.get('discovery_method', 'Unknown')
+                method = channel.get("discovery_method", "Unknown")
                 method_counts[method] = method_counts.get(method, 0) + 1
             
             st.write("**Discovery Summary:**")
@@ -300,7 +342,7 @@ def get_all_channels_comprehensive(credentials):
             st.error("❌ No channels found with comprehensive discovery methods.")
             st.write("**This suggests that:**")
             st.write("1. Your brand channels may not be properly linked to this Google account")
-            st.write("2. You may need to use each brand channel's specific Google account")
+            st.write("2. You may need to use each brand channel\'s specific Google account")
             st.write("3. The brand channels might require separate authentication")
             
             st.write("**Try this approach:**")
