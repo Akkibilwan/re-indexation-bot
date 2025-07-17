@@ -70,16 +70,78 @@ def get_streamlit_cloud_url():
     return st.secrets["STREAMLIT_CLOUD_URI"]
 
 def get_accessible_channels(credentials):
-    """Uses the YouTube Data API v3 to list channels accessible by the user."""
+    """Uses the YouTube Data API v3 to list ALL channels accessible by the user (personal + brand channels)."""
     try:
         youtube_service = build('youtube', 'v3', credentials=credentials)
-        request = youtube_service.channels().list(
-            part="snippet,statistics",
-            mine=True,
-            maxResults=50
-        )
-        response = request.execute()
-        return response.get("items", [])
+        all_channels = []
+        
+        # Method 1: Get personal channel (mine=True)
+        try:
+            request = youtube_service.channels().list(
+                part="snippet,statistics,brandingSettings",
+                mine=True,
+                maxResults=50
+            )
+            response = request.execute()
+            personal_channels = response.get("items", [])
+            all_channels.extend(personal_channels)
+            
+            # Mark personal channels
+            for channel in personal_channels:
+                channel['channel_type'] = 'Personal'
+                
+        except HttpError as e:
+            st.warning(f"Could not fetch personal channels: {e}")
+        
+        # Method 2: Get channels managed by this account (managedByMe=True)
+        try:
+            request = youtube_service.channels().list(
+                part="snippet,statistics,brandingSettings",
+                managedByMe=True,
+                maxResults=50
+            )
+            response = request.execute()
+            managed_channels = response.get("items", [])
+            
+            # Filter out duplicates (personal channel might appear in both lists)
+            existing_ids = {ch['id'] for ch in all_channels}
+            for channel in managed_channels:
+                if channel['id'] not in existing_ids:
+                    channel['channel_type'] = 'Brand'
+                    all_channels.append(channel)
+                    
+        except HttpError as e:
+            st.warning(f"Could not fetch managed channels: {e}")
+        
+        # Method 3: Alternative approach - get channels for content owner
+        try:
+            request = youtube_service.channels().list(
+                part="snippet,statistics,brandingSettings",
+                forContentOwner=True,
+                maxResults=50
+            )
+            response = request.execute()
+            owner_channels = response.get("items", [])
+            
+            # Filter out duplicates
+            existing_ids = {ch['id'] for ch in all_channels}
+            for channel in owner_channels:
+                if channel['id'] not in existing_ids:
+                    channel['channel_type'] = 'Owned'
+                    all_channels.append(channel)
+                    
+        except HttpError as e:
+            # This is expected to fail for most users as it requires special permissions
+            pass
+        
+        if not all_channels:
+            st.error("No channels found. This could mean:")
+            st.error("1. Your account doesn't have proper permissions")
+            st.error("2. You need to accept brand account manager invitations")
+            st.error("3. The OAuth scopes are insufficient")
+            
+        return all_channels
+        
     except HttpError as e:
         st.error(f"An error occurred while checking accessible channels: {e}")
         return None
