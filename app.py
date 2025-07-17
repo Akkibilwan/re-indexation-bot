@@ -64,6 +64,22 @@ def save_credentials_to_session(credentials):
         'scopes': credentials.scopes
     }
 
+def get_redirect_uri():
+    """Automatically detects the correct redirect URI based on environment."""
+    # Check if running on Streamlit Cloud
+    if 'streamlit.app' in st.get_option("browser.serverAddress") or st.get_option("server.headless"):
+        # Try to get the current URL from query params or use a default cloud pattern
+        if hasattr(st, 'query_params') and st.query_params:
+            current_url = st.experimental_get_query_params().get('redirect_uri', [None])[0]
+            if current_url:
+                return current_url
+        
+        # If we can't detect it, use the configured cloud URI
+        return st.secrets.get("STREAMLIT_CLOUD_URI", st.secrets["REDIRECT_URI"])
+    else:
+        # Local development
+        return "http://localhost:8501"
+
 def get_accessible_channels(credentials):
     """Uses the YouTube Data API v3 to list channels accessible by the user."""
     try:
@@ -229,15 +245,47 @@ if page == "🔐 Authentication":
     if creds is None:
         st.write("Click the button below to grant access to your YouTube Analytics and Google Sheets data.")
         
+        # Get the correct redirect URI
+        redirect_uri = get_redirect_uri()
+        
+        # Update CLIENT_CONFIG with the correct redirect URI
+        CLIENT_CONFIG["web"]["redirect_uris"] = [redirect_uri]
+        
         flow = Flow.from_client_config(
             CLIENT_CONFIG,
             scopes=SCOPES,
-            redirect_uri=st.secrets["REDIRECT_URI"]
+            redirect_uri=redirect_uri
         )
         auth_url, _ = flow.authorization_url(prompt='consent')
         
+        # Display current redirect URI for debugging
+        with st.expander("🔧 Debug Info"):
+            st.write(f"**Redirect URI:** {redirect_uri}")
+            st.write(f"**Running on Streamlit Cloud:** {'streamlit.app' in str(st.get_option('browser.serverAddress'))}")
+        
         st.link_button("Authorize with Google", auth_url)
+        
+        # Manual authorization code input as fallback
+        st.write("---")
+        st.write("**Alternative: Manual Authorization**")
+        st.write("If the button above doesn't work, click it, complete the authorization, and then paste the code from the URL here:")
+        
+        manual_auth_code = st.text_input(
+            "Authorization Code", 
+            placeholder="Paste the 'code' parameter from the redirect URL",
+            help="After clicking authorize, you'll be redirected to a URL with '?code=...' - copy that code here"
+        )
+        
+        if st.button("Submit Authorization Code") and manual_auth_code:
+            try:
+                flow.fetch_token(code=manual_auth_code)
+                save_credentials_to_session(flow.credentials)
+                st.success("Authentication successful! Navigate to Analytics Dashboard.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Authentication failed: {e}")
 
+        # Check for authorization code in URL
         auth_code = st.query_params.get("code")
         if auth_code:
             try:
