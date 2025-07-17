@@ -64,21 +64,9 @@ def save_credentials_to_session(credentials):
         'scopes': credentials.scopes
     }
 
-def get_redirect_uri():
-    """Automatically detects the correct redirect URI based on environment."""
-    # Check if running on Streamlit Cloud
-    if 'streamlit.app' in st.get_option("browser.serverAddress") or st.get_option("server.headless"):
-        # Try to get the current URL from query params or use a default cloud pattern
-        if hasattr(st, 'query_params') and st.query_params:
-            current_url = st.experimental_get_query_params().get('redirect_uri', [None])[0]
-            if current_url:
-                return current_url
-        
-        # If we can't detect it, use the configured cloud URI
-        return st.secrets.get("STREAMLIT_CLOUD_URI", st.secrets["REDIRECT_URI"])
-    else:
-        # Local development
-        return "http://localhost:8501"
+def get_streamlit_cloud_url():
+    """Gets the Streamlit Cloud URL from secrets or environment."""
+    return st.secrets["STREAMLIT_CLOUD_URI"]
 
 def get_accessible_channels(credentials):
     """Uses the YouTube Data API v3 to list channels accessible by the user."""
@@ -245,10 +233,10 @@ if page == "🔐 Authentication":
     if creds is None:
         st.write("Click the button below to grant access to your YouTube Analytics and Google Sheets data.")
         
-        # Get the correct redirect URI
-        redirect_uri = get_redirect_uri()
+        # Use Streamlit Cloud URL
+        redirect_uri = get_streamlit_cloud_url()
         
-        # Update CLIENT_CONFIG with the correct redirect URI
+        # Update CLIENT_CONFIG with the Streamlit Cloud redirect URI
         CLIENT_CONFIG["web"]["redirect_uris"] = [redirect_uri]
         
         flow = Flow.from_client_config(
@@ -258,43 +246,58 @@ if page == "🔐 Authentication":
         )
         auth_url, _ = flow.authorization_url(prompt='consent')
         
-        # Display current redirect URI for debugging
-        with st.expander("🔧 Debug Info"):
-            st.write(f"**Redirect URI:** {redirect_uri}")
-            st.write(f"**Running on Streamlit Cloud:** {'streamlit.app' in str(st.get_option('browser.serverAddress'))}")
+        # Display current redirect URI for verification
+        with st.expander("🔧 App Configuration"):
+            st.write(f"**Streamlit Cloud URL:** {redirect_uri}")
+            st.write("Make sure this URL is added to your Google Cloud Console OAuth settings.")
         
-        st.link_button("Authorize with Google", auth_url)
+        st.link_button("🔐 Authorize with Google", auth_url, type="primary")
         
-        # Manual authorization code input as fallback
+        # Manual authorization code input as primary method for Streamlit Cloud
         st.write("---")
-        st.write("**Alternative: Manual Authorization**")
-        st.write("If the button above doesn't work, click it, complete the authorization, and then paste the code from the URL here:")
+        st.subheader("📝 Authorization Code")
+        st.write("After clicking the authorization button above:")
+        st.write("1. Complete the Google authorization process")
+        st.write("2. You may see an error page - that's normal!")
+        st.write("3. Copy the **code** parameter from the URL")
+        st.write("4. Paste it below and click Submit")
+        
+        # Example of what to look for
+        st.code("Example URL: https://your-app.streamlit.app/?code=4/0AbUR2VM... \nCopy: 4/0AbUR2VM...")
         
         manual_auth_code = st.text_input(
-            "Authorization Code", 
-            placeholder="Paste the 'code' parameter from the redirect URL",
-            help="After clicking authorize, you'll be redirected to a URL with '?code=...' - copy that code here"
+            "Paste Authorization Code Here", 
+            placeholder="4/0AbUR2VM...",
+            help="Copy the entire code parameter from the redirect URL"
         )
         
-        if st.button("Submit Authorization Code") and manual_auth_code:
+        if st.button("✅ Submit Authorization Code", type="primary") and manual_auth_code:
             try:
-                flow.fetch_token(code=manual_auth_code)
+                # Clean the auth code (remove any extra spaces or characters)
+                clean_auth_code = manual_auth_code.strip()
+                flow.fetch_token(code=clean_auth_code)
                 save_credentials_to_session(flow.credentials)
-                st.success("Authentication successful! Navigate to Analytics Dashboard.")
+                st.success("🎉 Authentication successful! Navigate to Analytics Dashboard.")
+                st.balloons()
                 st.rerun()
             except Exception as e:
-                st.error(f"Authentication failed: {e}")
+                st.error(f"❌ Authentication failed: {e}")
+                st.write("**Troubleshooting tips:**")
+                st.write("- Make sure you copied the complete authorization code")
+                st.write("- The code should start with '4/0A' or similar")
+                st.write("- Try getting a fresh code by clicking the authorization button again")
 
-        # Check for authorization code in URL
+        # Auto-check for authorization code in URL (backup method)
         auth_code = st.query_params.get("code")
         if auth_code:
             try:
                 flow.fetch_token(code=auth_code)
                 save_credentials_to_session(flow.credentials)
-                st.success("Authentication successful! Navigate to Analytics Dashboard.")
+                st.success("🎉 Authentication successful! Navigate to Analytics Dashboard.")
                 st.rerun()
             except Exception as e:
-                st.error(f"Authentication failed: {e}")
+                st.error(f"Auto-authentication failed: {e}")
+                st.write("Please use the manual method above.")
     else:
         st.success("✅ You are authenticated!")
         
@@ -312,7 +315,7 @@ if page == "🔐 Authentication":
                 with col3:
                     st.write(f"Videos: {channel['statistics'].get('videoCount', '0')}")
         
-        if st.button("Logout"):
+        if st.button("🚪 Logout"):
             st.session_state.credentials = None
             st.rerun()
 
