@@ -30,12 +30,13 @@ try:
             "token_uri": "https://oauth2.googleapis.com/token",
             "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
             "client_secret": st.secrets["GOOGLE_CLIENT_SECRET"],
-            "redirect_uris": [st.secrets["REDIRECT_URI"]]
+            "redirect_uris": [st.secrets["STREAMLIT_CLOUD_URI"]]
         }
     }
     GOOGLE_SHEET_ID = st.secrets["GOOGLE_SHEET_ID"].strip()
 except KeyError as e:
     st.error(f"🔴 Critical Error: Missing secret key - {e}. Please configure your secrets in the Streamlit app settings.")
+    st.error("Required secrets: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, STREAMLIT_CLOUD_URI, GOOGLE_SHEET_ID")
     st.stop()
 
 # --- Authentication State ---
