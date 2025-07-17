@@ -233,6 +233,93 @@ def get_all_brand_channels_ultimate(credentials):
     except Exception as e:
         st.error(f"Ultimate channel discovery failed: {e}")
         return []
+
+def get_streamlit_cloud_url():
+    """Gets the Streamlit Cloud URL from secrets or environment."""
+    return st.secrets["STREAMLIT_CLOUD_URI"]
+
+def get_brand_channels_by_email(credentials):
+    """
+    Alternative approach: Get brand channels by checking all possible channels
+    associated with the authenticated email account.
+    """
+    try:
+        access_token = credentials.token
+        
+        # Refresh token if needed
+        if credentials.expired:
+            credentials.refresh(requests.Request())
+            access_token = credentials.token
+        
+        st.info("🔍 Attempting alternative brand channel discovery...")
+        
+        # Try different approaches to discover channels through analytics
+        try:
+            analytics_service = build('youtubeAnalytics', 'v2', credentials=credentials)
+            discovered_channels = []
+            
+            # Try different date ranges
+            test_dates = ['2024-01-01', '2023-01-01', '2022-01-01']
+            
+            for start_date in test_dates:
+                try:
+                    # Use a broad analytics query that might reveal channel IDs
+                    analytics_url = "https://youtubeanalytics.googleapis.com/v2/reports"
+                    headers = {'Authorization': f'Bearer {access_token}'}
+                    
+                    params = {
+                        'ids': 'channel==MINE',
+                        'startDate': start_date,
+                        'endDate': start_date,
+                        'metrics': 'views',
+                        'dimensions': 'channel,day'
+                    }
+                    
+                    response = requests.get(analytics_url, headers=headers, params=params)
+                    if response.status_code == 200:
+                        data = response.json()
+                        if 'rows' in data:
+                            for row in data['rows']:
+                                channel_id = row[0] if row else None
+                                if channel_id and channel_id.startswith('UC'):
+                                    if channel_id not in discovered_channels:
+                                        discovered_channels.append(channel_id)
+                                        
+                except Exception:
+                    continue
+            
+            # Get full details for discovered channels
+            if discovered_channels:
+                youtube_service = build('youtube', 'v3', credentials=credentials)
+                all_channels = []
+                
+                for channel_id in discovered_channels:
+                    try:
+                        channel_request = youtube_service.channels().list(
+                            part="snippet,statistics,brandingSettings",
+                            id=channel_id
+                        )
+                        channel_response = channel_request.execute()
+                        channels = channel_response.get("items", [])
+                        
+                        for channel in channels:
+                            channel['channel_type'] = 'Analytics Enumeration'
+                            channel['discovery_method'] = 'Analytics Channel Enumeration'
+                            all_channels.append(channel)
+                            
+                    except HttpError:
+                        pass
+                
+                return all_channels
+                
+        except Exception as e:
+            st.info(f"Analytics enumeration failed: {e}")
+        
+        return []
+        
+    except Exception as e:
+        st.error(f"Brand channel discovery failed: {e}")
+        return []
     """
     Alternative approach: Get brand channels by checking all possible channels
     associated with the authenticated email account.
