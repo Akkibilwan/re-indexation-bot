@@ -484,6 +484,63 @@ if page == "🔐 Authentication":
             st.write("2. Check if you can access all your channels there")
             st.write("3. Accept any pending manager invitations")
             st.write("4. Try re-authenticating with this app")
+            
+            # Manual channel input option
+            st.write("---")
+            st.subheader("🔧 Manual Channel Setup")
+            st.write("As a workaround, you can manually add your channel IDs:")
+            
+            manual_channels = st.text_area(
+                "Enter Channel IDs (one per line)",
+                placeholder="UC1234567890abcdefghij\nUC0987654321zyxwvutsrq\nUC...",
+                help="Get Channel IDs from YouTube Studio → Settings → Channel → Advanced Settings"
+            )
+            
+            if st.button("Load Manual Channels") and manual_channels:
+                manual_channel_ids = [id.strip() for id in manual_channels.split('\n') if id.strip()]
+                if manual_channel_ids:
+                    try:
+                        youtube_service = build('youtube', 'v3', credentials=creds)
+                        manual_request = youtube_service.channels().list(
+                            part="snippet,statistics,brandingSettings",
+                            id=','.join(manual_channel_ids)
+                        )
+                        manual_response = manual_request.execute()
+                        manual_found = manual_response.get("items", [])
+                        
+                        if manual_found:
+                            st.success(f"✅ Found {len(manual_found)} channels!")
+                            for channel in manual_found:
+                                channel['channel_type'] = 'Manual'
+                            
+                            # Store in session state
+                            st.session_state.manual_channels = manual_found
+                            st.rerun()
+                        else:
+                            st.error("No channels found with the provided IDs")
+                            
+                    except HttpError as e:
+                        st.error(f"Error loading manual channels: {e}")
+        
+        # Check for manual channels in session state
+        if 'manual_channels' in st.session_state and st.session_state.manual_channels:
+            st.write("### Manually Added Channels:")
+            for channel in st.session_state.manual_channels:
+                col1, col2, col3, col4 = st.columns([3, 2, 2, 1])
+                with col1:
+                    st.write(f"⚙️ **{channel['snippet']['title']}**")
+                with col2:
+                    st.write(f"Subscribers: {channel['statistics'].get('subscriberCount', 'Hidden')}")
+                with col3:
+                    st.write(f"Videos: {channel['statistics'].get('videoCount', '0')}")
+                with col4:
+                    st.write("Manual")
+            
+            # Combine with auto-discovered channels
+            if channels:
+                channels.extend(st.session_state.manual_channels)
+            else:
+                channels = st.session_state.manual_channels
         
         if st.button("🚪 Logout"):
             st.session_state.credentials = None
