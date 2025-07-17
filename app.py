@@ -17,7 +17,8 @@ st.set_page_config(page_title="Multi-Channel YouTube Analytics Dashboard", page_
 SCOPES = [
     "https://www.googleapis.com/auth/yt-analytics.readonly",
     "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/youtube.readonly"
+    "https://www.googleapis.com/auth/youtube.readonly",
+    "https://www.googleapis.com/auth/youtube.force-ssl"  # Added for better channel access
 ]
 
 # --- Secrets Management ---
@@ -93,52 +94,102 @@ def get_accessible_channels(credentials):
         except HttpError as e:
             st.warning(f"Could not fetch personal channels: {e}")
         
-        # Method 2: Get channels managed by this account (managedByMe=True)
+        # Method 2: Get all channels associated with the authenticated user
+        # This is the correct way to get brand channels
         try:
-            request = youtube_service.channels().list(
-                part="snippet,statistics,brandingSettings",
-                managedByMe=True,
+            # First, get the channel list for the authenticated user
+            # Use the "id" parameter with the user's channel IDs if we can get them
+            
+            # Alternative approach: Use the YouTube Analytics API to discover channels
+            youtube_analytics = build('youtubeAnalytics', 'v2', credentials=credentials)
+            
+            # Try to get channel groups (this often reveals brand channels)
+            try:
+                groups_request = youtube_analytics.groupItems().list(
+                    groupId='allChannels'
+                )
+                groups_response = groups_request.execute()
+                
+                if 'items' in groups_response:
+                    for item in groups_response['items']:
+                        channel_id = item.get('resource', {}).get('id')
+                        if channel_id:
+                            # Get full channel details
+                            try:
+                                channel_request = youtube_service.channels().list(
+                                    part="snippet,statistics,brandingSettings",
+                                    id=channel_id
+                                )
+                                channel_response = channel_request.execute()
+                                brand_channels = channel_response.get("items", [])
+                                
+                                # Filter out duplicates
+                                existing_ids = {ch['id'] for ch in all_channels}
+                                for channel in brand_channels:
+                                    if channel['id'] not in existing_ids:
+                                        channel['channel_type'] = 'Brand'
+                                        all_channels.append(channel)
+                            except HttpError:
+                                pass
+                                
+            except HttpError:
+                # Groups API might not be available
+                pass
+                
+        except Exception as e:
+            st.info(f"Advanced channel discovery not available: {e}")
+        
+        # Method 3: Try to discover channels through search
+        # This is a fallback method that searches for channels owned by the user
+        try:
+            # Get the user's Google account info to search for their channels
+            search_request = youtube_service.search().list(
+                part="snippet",
+                forMine=True,
+                type="channel",
                 maxResults=50
             )
-            response = request.execute()
-            managed_channels = response.get("items", [])
+            search_response = search_request.execute()
             
-            # Filter out duplicates (personal channel might appear in both lists)
-            existing_ids = {ch['id'] for ch in all_channels}
-            for channel in managed_channels:
-                if channel['id'] not in existing_ids:
-                    channel['channel_type'] = 'Brand'
-                    all_channels.append(channel)
+            search_channels = search_response.get("items", [])
+            for item in search_channels:
+                channel_id = item['snippet']['channelId']
+                
+                # Get full channel details
+                try:
+                    channel_request = youtube_service.channels().list(
+                        part="snippet,statistics,brandingSettings",
+                        id=channel_id
+                    )
+                    channel_response = channel_request.execute()
+                    found_channels = channel_response.get("items", [])
+                    
+                    # Filter out duplicates
+                    existing_ids = {ch['id'] for ch in all_channels}
+                    for channel in found_channels:
+                        if channel['id'] not in existing_ids:
+                            channel['channel_type'] = 'Discovered'
+                            all_channels.append(channel)
+                            
+                except HttpError:
+                    pass
                     
         except HttpError as e:
-            st.warning(f"Could not fetch managed channels: {e}")
+            st.info("Channel search not available - this is normal for some accounts")
         
-        # Method 3: Alternative approach - get channels for content owner
-        try:
-            request = youtube_service.channels().list(
-                part="snippet,statistics,brandingSettings",
-                forContentOwner=True,
-                maxResults=50
-            )
-            response = request.execute()
-            owner_channels = response.get("items", [])
-            
-            # Filter out duplicates
-            existing_ids = {ch['id'] for ch in all_channels}
-            for channel in owner_channels:
-                if channel['id'] not in existing_ids:
-                    channel['channel_type'] = 'Owned'
-                    all_channels.append(channel)
-                    
-        except HttpError as e:
-            # This is expected to fail for most users as it requires special permissions
-            pass
-        
+        # If we still have no channels, provide helpful guidance
         if not all_channels:
-            st.error("No channels found. This could mean:")
-            st.error("1. Your account doesn't have proper permissions")
-            st.error("2. You need to accept brand account manager invitations")
-            st.error("3. The OAuth scopes are insufficient")
+            st.error("❌ No channels found with current permissions.")
+            st.write("**This usually means:**")
+            st.write("1. You need to authenticate with your **personal Google account** (not brand account)")
+            st.write("2. Your personal account needs **Manager** access to the brand channels")
+            st.write("3. You may need to accept pending invitations in YouTube Studio")
+            
+            st.write("**To fix this:**")
+            st.write("1. Go to [YouTube Studio](https://studio.youtube.com)")
+            st.write("2. Switch between channels using the profile icon")
+            st.write("3. For each brand channel → Settings → Permissions → Invite your personal email as Manager")
+            st.write("4. Accept all invitations and re-authenticate here")
             
         return all_channels
         
@@ -369,14 +420,70 @@ if page == "🔐 Authentication":
         
         if channels:
             st.write("### Your YouTube Channels:")
-            for channel in channels:
-                col1, col2, col3 = st.columns([3, 2, 2])
-                with col1:
-                    st.write(f"**{channel['snippet']['title']}**")
-                with col2:
-                    st.write(f"Subscribers: {channel['statistics'].get('subscriberCount', 'Hidden')}")
-                with col3:
-                    st.write(f"Videos: {channel['statistics'].get('videoCount', '0')}")
+            
+            # Separate channels by type
+            personal_channels = [ch for ch in channels if ch.get('channel_type') == 'Personal']
+            brand_channels = [ch for ch in channels if ch.get('channel_type') == 'Brand']
+            owned_channels = [ch for ch in channels if ch.get('channel_type') == 'Owned']
+            
+            # Display personal channels
+            if personal_channels:
+                st.write("**Personal Channels:**")
+                for channel in personal_channels:
+                    col1, col2, col3, col4 = st.columns([3, 2, 2, 1])
+                    with col1:
+                        st.write(f"🏠 **{channel['snippet']['title']}**")
+                    with col2:
+                        st.write(f"Subscribers: {channel['statistics'].get('subscriberCount', 'Hidden')}")
+                    with col3:
+                        st.write(f"Videos: {channel['statistics'].get('videoCount', '0')}")
+                    with col4:
+                        st.write("Personal")
+            
+            # Display brand channels
+            if brand_channels:
+                st.write("**Brand Channels:**")
+                for channel in brand_channels:
+                    col1, col2, col3, col4 = st.columns([3, 2, 2, 1])
+                    with col1:
+                        st.write(f"🏢 **{channel['snippet']['title']}**")
+                    with col2:
+                        st.write(f"Subscribers: {channel['statistics'].get('subscriberCount', 'Hidden')}")
+                    with col3:
+                        st.write(f"Videos: {channel['statistics'].get('videoCount', '0')}")
+                    with col4:
+                        st.write("Brand")
+            
+            # Display owned channels
+            if owned_channels:
+                st.write("**Owned Channels:**")
+                for channel in owned_channels:
+                    col1, col2, col3, col4 = st.columns([3, 2, 2, 1])
+                    with col1:
+                        st.write(f"👑 **{channel['snippet']['title']}**")
+                    with col2:
+                        st.write(f"Subscribers: {channel['statistics'].get('subscriberCount', 'Hidden')}")
+                    with col3:
+                        st.write(f"Videos: {channel['statistics'].get('videoCount', '0')}")
+                    with col4:
+                        st.write("Owned")
+            
+            # Show channel IDs for debugging
+            with st.expander("🔧 Channel IDs (for debugging)"):
+                for channel in channels:
+                    st.write(f"**{channel['snippet']['title']}**: `{channel['id']}` ({channel.get('channel_type', 'Unknown')})")
+                    
+        else:
+            st.warning("No channels found. Make sure you have:")
+            st.write("- Manager access to your brand channels")
+            st.write("- Accepted any pending invitations in YouTube Studio")
+            st.write("- Proper OAuth permissions")
+            
+            st.write("**Troubleshooting steps:**")
+            st.write("1. Go to [YouTube Studio](https://studio.youtube.com)")
+            st.write("2. Check if you can access all your channels there")
+            st.write("3. Accept any pending manager invitations")
+            st.write("4. Try re-authenticating with this app")
         
         if st.button("🚪 Logout"):
             st.session_state.credentials = None
