@@ -27,7 +27,8 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",              # Google Sheets access
     "https://www.googleapis.com/auth/drive.file",                # Google Drive files (scoped)
     "https://www.googleapis.com/auth/userinfo.email",            # User email for account linking
-    "https://www.googleapis.com/auth/userinfo.profile"           # User profile for account identification
+    "https://www.googleapis.com/auth/userinfo.profile",          # User profile for account identification
+    "https://www.googleapis.com/auth/yt-analytics-monetary.readonly"  # Monetary analytics (if needed)
 ]
 
 # --- Secrets Management ---
@@ -218,7 +219,87 @@ def refresh_credentials(credentials):
     except Exception as e:
         return None, str(e)
 
-def get_all_channels_comprehensive(credentials):
+def check_channel_permissions(credentials, channel_id):
+    """Check if the authenticated user has permissions for a specific channel."""
+    try:
+        # Try to get basic channel info
+        youtube_service = build('youtube', 'v3', credentials=credentials)
+        
+        # First, check if we can access the channel at all
+        try:
+            channel_request = youtube_service.channels().list(
+                part="snippet,statistics",
+                id=channel_id
+            )
+            channel_response = channel_request.execute()
+            
+            if not channel_response.get('items'):
+                return False, "Channel not found or not accessible"
+            
+            # Try to access analytics for this channel
+            analytics_service = build('youtubeAnalytics', 'v2', credentials=credentials)
+            
+            # Test with a simple analytics query
+            test_date = (datetime.date.today() - datetime.timedelta(days=7)).strftime("%Y-%m-%d")
+            
+            analytics_request = analytics_service.reports().query(
+                ids=f"channel=={channel_id}",
+                startDate=test_date,
+                endDate=test_date,
+                metrics="views"
+            )
+            
+            analytics_response = analytics_request.execute()
+            
+            return True, "Full access granted"
+            
+        except HttpError as e:
+            if e.resp.status == 403:
+                return False, f"HTTP 403: No analytics permission for channel {channel_id}"
+            else:
+                return False, f"HTTP {e.resp.status}: {e}"
+                
+    except Exception as e:
+        return False, f"Error checking permissions: {str(e)}"
+
+def get_channel_access_details(credentials):
+    """Get detailed access information for all discoverable channels."""
+    try:
+        youtube_service = build('youtube', 'v3', credentials=credentials)
+        
+        # Get all channels the user has some access to
+        channels_request = youtube_service.channels().list(
+            part="snippet,statistics,contentDetails",
+            mine=True,
+            maxResults=50
+        )
+        channels_response = channels_request.execute()
+        
+        accessible_channels = []
+        
+        for channel in channels_response.get('items', []):
+            channel_id = channel['id']
+            
+            # Check analytics permissions
+            has_analytics, analytics_msg = check_channel_permissions(credentials, channel_id)
+            
+            channel_info = {
+                'id': channel_id,
+                'title': channel['snippet']['title'],
+                'has_analytics': has_analytics,
+                'analytics_message': analytics_msg,
+                'subscriber_count': channel['statistics'].get('subscriberCount', 'Hidden'),
+                'video_count': channel['statistics'].get('videoCount', '0'),
+                'channel_type': 'Personal' if channel.get('kind') == 'youtube#channel' else 'Brand'
+            }
+            
+            accessible_channels.append(channel_info)
+        
+        return accessible_channels
+        
+    except Exception as e:
+        st.error(f"Error getting channel access details: {e}")
+        return []
     """
     Comprehensive method to get ALL channels associated with the authenticated account.
     Uses multiple approaches including direct API calls and token-based requests.
@@ -978,154 +1059,125 @@ if page == "🔐 Authentication":
         st.success("✅ You are authenticated!")
         
         with st.spinner("Loading your channels..."):
-            # Try comprehensive channel discovery first
-            channels = get_all_channels_comprehensive(creds)
+            # Get detailed channel access information
+            accessible_channels = get_channel_access_details(creds)
             
-            # If comprehensive method doesn't find enough channels, try ultimate method
-            if len(channels) < 7:  # You mentioned you have 7 channels
-                st.info("🔄 Trying ultimate discovery method...")
-                ultimate_channels = get_all_brand_channels_ultimate(creds)
+            if accessible_channels:
+                st.write("### Your YouTube Channels & Permissions:")
                 
-                # Merge with existing channels, avoiding duplicates
-                existing_ids = {ch['id'] for ch in channels}
-                for channel in ultimate_channels:
-                    if channel['id'] not in existing_ids:
-                        channels.append(channel)
-            
-            # Final fallback: try the alternative email method
-            if len(channels) < 3:  # Still not enough channels
-                st.info("🔄 Trying alternative discovery methods...")
-                additional_channels = get_brand_channels_by_email(creds)
-                
-                # Merge with existing channels, avoiding duplicates
-                existing_ids = {ch['id'] for ch in channels}
-                for channel in additional_channels:
-                    if channel['id'] not in existing_ids:
-                        channels.append(channel)
-        
-        if channels:
-            st.write("### Your YouTube Channels:")
-            
-            # Separate channels by type
-            personal_channels = [ch for ch in channels if ch.get('channel_type') == 'Personal']
-            brand_channels = [ch for ch in channels if ch.get('channel_type') == 'Brand']
-            other_channels = [ch for ch in channels if ch.get('channel_type') not in ['Personal', 'Brand']]
-            
-            # Display personal channels
-            if personal_channels:
-                st.write("**Personal Channels:**")
-                for channel in personal_channels:
-                    col1, col2, col3, col4 = st.columns([3, 2, 2, 1])
-                    with col1:
-                        st.write(f"🏠 **{channel['snippet']['title']}**")
-                    with col2:
-                        st.write(f"Subscribers: {channel['statistics'].get('subscriberCount', 'Hidden')}")
-                    with col3:
-                        st.write(f"Videos: {channel['statistics'].get('videoCount', '0')}")
-                    with col4:
-                        st.write("Personal")
-            
-            # Display brand channels
-            if brand_channels:
-                st.write("**Brand Channels:**")
-                for channel in brand_channels:
-                    col1, col2, col3, col4 = st.columns([3, 2, 2, 1])
-                    with col1:
-                        st.write(f"🏢 **{channel['snippet']['title']}**")
-                    with col2:
-                        st.write(f"Subscribers: {channel['statistics'].get('subscriberCount', 'Hidden')}")
-                    with col3:
-                        st.write(f"Videos: {channel['statistics'].get('videoCount', '0')}")
-                    with col4:
-                        st.write("Brand")
-            
-            # Display other discovered channels
-            if other_channels:
-                st.write("**Other Discovered Channels:**")
-                for channel in other_channels:
-                    col1, col2, col3, col4 = st.columns([3, 2, 2, 1])
-                    with col1:
-                        st.write(f"🔍 **{channel['snippet']['title']}**")
-                    with col2:
-                        st.write(f"Subscribers: {channel['statistics'].get('subscriberCount', 'Hidden')}")
-                    with col3:
-                        st.write(f"Videos: {channel['statistics'].get('videoCount', '0')}")
-                    with col4:
-                        st.write(channel.get('channel_type', 'Unknown'))
-            
-            # Show channel IDs for debugging
-            with st.expander("🔧 Channel IDs (for debugging)"):
-                for channel in channels:
-                    st.write(f"**{channel['snippet']['title']}**: `{channel['id']}` ({channel.get('channel_type', 'Unknown')})")
-                    
-        else:
-            st.warning("No channels found. Make sure you have:")
-            st.write("- Manager access to your brand channels")
-            st.write("- Accepted any pending invitations in YouTube Studio")
-            st.write("- Proper OAuth permissions")
-            
-            st.write("**Troubleshooting steps:**")
-            st.write("1. Go to [YouTube Studio](https://studio.youtube.com)")
-            st.write("2. Check if you can access all your channels there")
-            st.write("3. Accept any pending manager invitations")
-            st.write("4. Try re-authenticating with this app")
-            
-            # Manual channel input option
-            st.write("---")
-            st.subheader("🔧 Manual Channel Setup")
-            st.write("As a workaround, you can manually add your channel IDs:")
-            
-            manual_channels = st.text_area(
-                "Enter Channel IDs (one per line)",
-                placeholder="UC1234567890abcdefghij\nUC0987654321zyxwvutsrq\nUC...",
-                help="Get Channel IDs from YouTube Studio → Settings → Channel → Advanced Settings"
-            )
-            
-            if st.button("Load Manual Channels") and manual_channels:
-                manual_channel_ids = [id.strip() for id in manual_channels.split('\n') if id.strip()]
-                if manual_channel_ids:
-                    try:
-                        youtube_service = build('youtube', 'v3', credentials=creds)
-                        manual_request = youtube_service.channels().list(
-                            part="snippet,statistics,brandingSettings",
-                            id=','.join(manual_channel_ids)
-                        )
-                        manual_response = manual_request.execute()
-                        manual_found = manual_response.get("items", [])
+                for channel_info in accessible_channels:
+                    with st.expander(f"📺 {channel_info['title']} ({channel_info['channel_type']})"):
+                        col1, col2 = st.columns(2)
                         
-                        if manual_found:
-                            st.success(f"✅ Found {len(manual_found)} channels!")
-                            for channel in manual_found:
-                                channel['channel_type'] = 'Manual'
-                            
-                            # Store in session state
-                            st.session_state.manual_channels = manual_found
-                            st.rerun()
-                        else:
-                            st.error("No channels found with the provided IDs")
-                            
-                    except HttpError as e:
-                        st.error(f"Error loading manual channels: {e}")
-        
-        # Check for manual channels in session state
-        if 'manual_channels' in st.session_state and st.session_state.manual_channels:
-            st.write("### Manually Added Channels:")
-            for channel in st.session_state.manual_channels:
-                col1, col2, col3, col4 = st.columns([3, 2, 2, 1])
-                with col1:
-                    st.write(f"⚙️ **{channel['snippet']['title']}**")
-                with col2:
-                    st.write(f"Subscribers: {channel['statistics'].get('subscriberCount', 'Hidden')}")
-                with col3:
-                    st.write(f"Videos: {channel['statistics'].get('videoCount', '0')}")
-                with col4:
-                    st.write("Manual")
-            
-            # Combine with auto-discovered channels
-            if 'channels' in locals() and channels:
-                channels.extend(st.session_state.manual_channels)
+                        with col1:
+                            st.write(f"**Channel ID:** `{channel_info['id']}`")
+                            st.write(f"**Subscribers:** {channel_info['subscriber_count']}")
+                            st.write(f"**Videos:** {channel_info['video_count']}")
+                            st.write(f"**Type:** {channel_info['channel_type']}")
+                        
+                        with col2:
+                            if channel_info['has_analytics']:
+                                st.success("✅ Analytics Access: Full Permission")
+                            else:
+                                st.error(f"❌ Analytics Access: {channel_info['analytics_message']}")
+                
+                # Show summary
+                total_channels = len(accessible_channels)
+                analytics_access = sum(1 for ch in accessible_channels if ch['has_analytics'])
+                
+                st.write("### Summary:")
+                st.write(f"- **Total Channels Found:** {total_channels}")
+                st.write(f"- **With Analytics Access:** {analytics_access}")
+                st.write(f"- **Without Analytics Access:** {total_channels - analytics_access}")
+                
+                # Show channels without access
+                blocked_channels = [ch for ch in accessible_channels if not ch['has_analytics']]
+                if blocked_channels:
+                    st.write("### ⚠️ Channels Requiring Permission Setup:")
+                    for channel in blocked_channels:
+                        st.error(f"**{channel['title']}** - {channel['analytics_message']}")
+                    
+                    st.write("**To fix permission issues:**")
+                    st.write("1. Go to [YouTube Studio](https://studio.youtube.com)")
+                    st.write("2. Switch to each blocked channel")
+                    st.write("3. Go to Settings → Permissions")
+                    st.write("4. Add your authentication account as 'Manager'")
+                    st.write("5. Make sure 'View YouTube Analytics' permission is granted")
+                    st.write("6. Re-authenticate this app")
+                
             else:
-                channels = st.session_state.manual_channels
+                st.warning("No channels found with current authentication.")
+                
+                # Comprehensive troubleshooting
+                st.write("### 🔧 Troubleshooting Steps:")
+                
+                st.write("**1. Check Authentication Account:**")
+                st.write("- Make sure you're using your main Google account")
+                st.write("- This account should be the owner/manager of your brand channels")
+                
+                st.write("**2. Brand Channel Setup:**")
+                st.write("- Go to [YouTube Studio](https://studio.youtube.com)")
+                st.write("- Check if you can see all 7 channels in the channel switcher")
+                st.write("- For each brand channel:")
+                st.write("  - Go to Settings → Permissions")
+                st.write("  - Ensure your main account has 'Manager' role")
+                st.write("  - Verify 'View YouTube Analytics' is enabled")
+                
+                st.write("**3. API Permissions:**")
+                st.write("- Verify YouTube Data API v3 is enabled")
+                st.write("- Verify YouTube Analytics API is enabled")
+                st.write("- Check API quotas are not exceeded")
+                
+                st.write("**4. OAuth Consent Screen:**")
+                st.write("- Add all required scopes to your OAuth consent screen")
+                st.write("- Make sure your email is in test users (if app is in testing)")
+                st.write("- Consider publishing your OAuth app")
+                
+                # Manual channel input as fallback
+                st.write("### 🔧 Manual Channel Input (Fallback):")
+                st.write("If auto-discovery fails, manually add your channel IDs:")
+                
+                manual_channels = st.text_area(
+                    "Enter Channel IDs (one per line)",
+                    placeholder="UCp7wOF7FLu15HKbnUlvNQ9g\nUC...\nUC...",
+                    help="Get Channel IDs from YouTube Studio → Settings → Channel → Advanced Settings"
+                )
+                
+                if st.button("Test Manual Channels") and manual_channels:
+                    manual_channel_ids = [id.strip() for id in manual_channels.split('\n') if id.strip()]
+                    if manual_channel_ids:
+                        st.write("### Manual Channel Test Results:")
+                        for channel_id in manual_channel_ids:
+                            has_access, message = check_channel_permissions(creds, channel_id)
+                            if has_access:
+                                st.success(f"✅ {channel_id}: {message}")
+                            else:
+                                st.error(f"❌ {channel_id}: {message}")
+                
+                # Test specific problematic channel
+                st.write("### 🧪 Test Specific Channel:")
+                st.write("Test the channel that's giving you the 403 error:")
+                
+                test_channel_id = st.text_input(
+                    "Channel ID to test:",
+                    value="UCp7wOF7FLu15HKbnUlvNQ9g",
+                    help="The channel ID that's giving you permission errors"
+                )
+                
+                if st.button("Test Channel Permissions") and test_channel_id:
+                    has_access, message = check_channel_permissions(creds, test_channel_id)
+                    if has_access:
+                        st.success(f"✅ {message}")
+                    else:
+                        st.error(f"❌ {message}")
+                        
+                        # Specific guidance for 403 errors
+                        if "403" in message:
+                            st.write("**403 Error means:**")
+                            st.write("- Your account doesn't have manager access to this channel")
+                            st.write("- The channel owner needs to grant you permissions")
+                            st.write("- Or you need to authenticate with the channel owner's account")
+                        
         
         if st.button("🚪 Logout"):
             st.session_state.credentials = None
